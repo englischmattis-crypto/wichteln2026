@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎄 Wichteln</title>
+<style>
+  :root { --bg:#1d2b24; --card:#fffaf2; --red:#b3261e; --green:#2e6b4f; --ink:#222; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:radial-gradient(circle at top,#2e4a3c,var(--bg)); color:var(--ink); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px 12px; overflow-x:hidden; }
+  .card { background:var(--card); border-radius:18px; padding:28px 24px; max-width:420px; width:100%; box-shadow:0 12px 40px rgba(0,0,0,.35); text-align:center; position:relative; z-index:1; }
+  h1 { margin:0 0 4px; color:var(--red); font-size:2rem; }
+  .sub { color:#666; margin:0 0 20px; }
+  .gift { font-size:5rem; display:inline-block; cursor:pointer; user-select:none; }
+  .gift.shake { animation:shake .6s ease-in-out 2; }
+  @keyframes shake { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-12deg)} 75%{transform:rotate(12deg)} }
+  .target { font-size:2.4rem; font-weight:800; color:var(--green); margin:10px 0; animation:pop .5s ease-out; }
+  @keyframes pop { from{transform:scale(.3);opacity:0} to{transform:scale(1);opacity:1} }
+  .pic { width:160px; height:160px; border-radius:50%; object-fit:cover; border:5px solid #d9a441; box-shadow:0 6px 18px rgba(0,0,0,.25); margin:8px auto 0; display:block; animation:pop .5s ease-out; }
+  .note { color:#666; font-size:.9rem; line-height:1.4; }
+  .err { color:var(--red); font-weight:600; }
+  button { margin-top:16px; width:100%; padding:10px; font-size:.95rem; font-weight:700; border-radius:12px; background:transparent; color:var(--green); border:2px solid var(--green); cursor:pointer; }
+  .hidden { display:none; }
+  .flake { position:fixed; top:-10px; color:#fff; opacity:.8; pointer-events:none; animation:fall linear forwards; z-index:0; }
+  @keyframes fall { to { transform:translateY(110vh); } }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎄 Wichteln</h1>
+
+  <div id="status"><p class="sub">Lade …</p></div>
+
+  <div id="reveal" class="hidden">
+    <p id="hello" class="sub"></p>
+    <div class="gift" id="gift" title="Antippen">🎁</div>
+    <p class="note">Tipp aufs Geschenk – und achte darauf, dass dir niemand über die Schulter schaut.</p>
+  </div>
+
+  <div id="result" class="hidden">
+    <p>Du beschenkst:</p>
+    <img id="pic" class="pic hidden" alt="">
+    <div class="target" id="target"></div>
+    <p class="note">Psst – nicht verraten! 🤫<br>Du kannst deinen Link jederzeit wieder öffnen.</p>
+    <button id="hide">Verbergen</button>
+  </div>
+</div>
+
+<script>
+const enc = new TextEncoder(), dec = new TextDecoder();
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const $ = id => document.getElementById(id);
+let info = null;
+
+// Öffentliche Kennung aus dem Token (gleiche Funktion wie in setup.html)
+async function tokenId(token) {
+  const h = await crypto.subtle.digest("SHA-256", enc.encode("id:" + token));
+  return Array.from(new Uint8Array(h).slice(0, 8), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Schlüssel aus Token ableiten (PBKDF2) und Eintrag entschlüsseln (AES-GCM)
+async function decryptFor(token, entry) {
+  const baseKey = await crypto.subtle.importKey("raw", enc.encode(token), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: unb64(entry.salt), iterations: 150000, hash: "SHA-256" },
+    baseKey, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(entry.iv) }, key, unb64(entry.ct));
+  return JSON.parse(dec.decode(pt));
+}
+
+function show(id) { ["status", "reveal", "result"].forEach(s => $(s).classList.toggle("hidden", s !== id)); }
+function fail(msg) { $("status").innerHTML = `<p class="err">${msg}</p>`; show("status"); }
+
+async function init() {
+  const token = location.hash.slice(1).trim().toUpperCase();
+  if (!token) return fail("Bitte öffne deinen persönlichen Link, den du bekommen hast. 🎁");
+
+  let data;
+  try { data = await (await fetch("data.json", { cache: "no-store" })).json(); }
+  catch { return fail("Noch keine Auslosung vorhanden."); }
+
+  const id = await tokenId(token);
+  const e = data.people.find(p => p.id === id);
+  if (!e) return fail("Dieser Link ist ungültig oder veraltet. Frag beim Organisator nach.");
+
+  try { info = await decryptFor(token, e); }
+  catch { return fail("Dieser Link ist ungültig oder veraltet."); }
+
+  $("hello").textContent = `Hallo ${info.me}! 👋`;
+  show("reveal");
+}
+
+$("gift").onclick = () => {
+  const g = $("gift");
+  if (g.classList.contains("shake")) return;
+  g.classList.add("shake");
+  setTimeout(() => {
+    g.classList.remove("shake");
+    $("target").textContent = info.target;
+    if (info.img) { $("pic").src = info.img; $("pic").classList.remove("hidden"); }
+    show("result");
+    snow();
+  }, 1200);
+};
+
+$("hide").onclick = () => { $("target").textContent = ""; $("pic").removeAttribute("src"); $("pic").classList.add("hidden"); show("reveal"); };
+
+function snow() {
+  for (let k = 0; k < 40; k++) {
+    const f = document.createElement("div");
+    f.className = "flake"; f.textContent = Math.random() < .5 ? "❄" : "✦";
+    f.style.left = Math.random() * 100 + "vw";
+    f.style.fontSize = 10 + Math.random() * 16 + "px";
+    f.style.animationDuration = 3 + Math.random() * 4 + "s";
+    f.style.animationDelay = Math.random() * 2 + "s";
+    document.body.appendChild(f);
+    setTimeout(() => f.remove(), 9000);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
